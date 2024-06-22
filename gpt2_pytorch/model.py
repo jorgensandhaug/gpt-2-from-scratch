@@ -79,26 +79,46 @@ class GPT2Config(object):
 
 
 class GPT2Model(nn.Module):
-    def __init__(self, model_path):
+    def __init__(self, config):
         super().__init__()
 
-        self.config = GPT2Config(
-            vocab_size=128,#50257,
-            hidden_size=384,#768,
-            num_layers=6,#12,
-            num_heads=6,#,
-            max_position_embeddings=512,#1024,
-            type_vocab_size=2,
-            initializer_range=0.02
-        )
+        self.config = config
         
-        self.model = nn.ModuleDict(
-            wte=nn.Embedding(self.config.vocab_size, self.config.hidden_size),
-            wpe=nn.Embedding(self.config.max_position_embeddings, self.config.hidden_size),
-            drop=nn.Dropout(p=0.1),
-            h=nn.ModuleList([
+        self.model = nn.ModuleDict({
+            'wte': nn.Embedding(self.config.vocab_size, self.config.hidden_size),
+            'wpe': nn.Embedding(self.config.max_position_embeddings, self.config.hidden_size),
+            'drop': nn.Dropout(p=0.1),
+            'h': nn.ModuleList([
                 GPT2Block(self.config) for _ in range(self.config.num_layers)
             ]),
-            ln_f=nn.LayerNorm(self.config.hidden_size, eps=1e-5),
-        )
+            'ln_f': nn.LayerNorm(self.config.hidden_size, eps=1e-5),
+        })
         self.lm_head = nn.Linear(self.config.hidden_size, self.config.vocab_size, bias=False)
+
+    def forward(self, input_ids):
+        # Get the input shape
+        batch_size, seq_length = input_ids.size()
+        
+        # Generate position ids
+        position_ids = torch.arange(0, seq_length, dtype=torch.long, device=input_ids.device)
+        position_ids = position_ids.unsqueeze(0).expand_as(input_ids)
+        
+        # Get word embeddings and position embeddings
+        inputs_embeds = self.model['wte'](input_ids)
+        position_embeds = self.model['wpe'](position_ids)
+        
+        # Add embeddings and apply dropout
+        hidden_states = inputs_embeds + position_embeds
+        hidden_states = self.model['drop'](hidden_states)
+        
+        # Pass through each transformer block
+        for block in self.model['h']:
+            hidden_states = block(hidden_states)
+        
+        # Apply final layer normalization
+        hidden_states = self.model['ln_f'](hidden_states)
+        
+        # Get logits
+        logits = self.lm_head(hidden_states)
+        
+        return logits
