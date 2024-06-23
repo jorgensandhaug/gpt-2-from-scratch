@@ -2,74 +2,117 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from transformers import GPT2Tokenizer, GPT2Config, GPT2Model
+from transformers import GPT2Tokenizer
+from model import GPT2Model, GPT2Config
 import wandb
 from dataset import FineWebDataset
+import time
 
 # Initialize Weights & Biases
 wandb.init(project="gpt2")
-# Load your dataset
+
+# Define parameters
 data_dir = 'edu_fineweb10B'
-train_dataset = FineWebDataset(data_dir, split='train')
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_dataset = FineWebDataset(data_dir, split='val')  # Assuming you have a validation split
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+B = 32  # Batch size for DataLoader
+T = 256  # Sequence length
+process_rank = 0  # Rank of the current process (e.g., in multi-GPU training)
+num_processes = 1  # Total number of processes
+
+# Determine device
+device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+
+# Load your datasets
+train_dataset = FineWebDataset(data_dir, B, T, process_rank, num_processes, split='train')
+train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+val_dataset = FineWebDataset(data_dir, B, T, process_rank, num_processes, split='val') 
+val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
 
 # Initialize the model and optimizer
 config = GPT2Config(
     vocab_size=50257,
-    hidden_size=768,
-    num_layers=12,
-    num_heads=12,
-    max_position_embeddings=1024,
-    type_vocab_size=2,
-    initializer_range=0.02
+    hidden_size=384,
+    num_layers=6,
+    num_heads=6,
+    max_position_embeddings=T,
 )
-model = GPT2Model(config)
-optimizer = optim.AdamW(model.parameters(), lr=5e-5)
+model = GPT2Model(config).to(device)
+lr = 6e-4
+optimizer = optim.AdamW(model.parameters(), lr=lr)
 criterion = nn.CrossEntropyLoss()
+
+
+# Training and validation loop
+num_epochs = 1000
+previous_best_val_loss = float('inf')
+# max_num_batches_train = 1000
+max_num_batches_val = 10
+validation_every = 10
 
 # Log hyperparameters
 wandb.config.update({
-    "learning_rate": 5e-5,
-    "batch_size": 32,
-    "num_epochs": 3,
+    "learning_rate": lr,
+    "batch_size": B, "num_epochs": num_epochs,
 })
 
-# Training and validation loop
-num_epochs = 3
-model.train()
+
+def run_validation(model, val_loader, step):
+    global previous_best_val_loss
+    model.eval()
+    total_val_loss = 0.0
+    with torch.no_grad():
+        for i, batch in enumerate(val_loader):
+            if i > max_num_batches_val:
+                break
+        
+            inputs, labels = batch[0].to(device), batch[1].to(device)
+            inputs = inputs.reshape(B, T)
+            labels = labels.reshape(B, T)
+            
+            outputs = model(inputs)
+            loss = criterion(outputs.view(-1, outputs.size(-1)), labels.view(-1))
+            total_val_loss += loss.item()
+    
+    avg_val_loss = total_val_loss / min(len(val_loader), max_num_batches_val)
+    wandb.log({"avg_val_loss": avg_val_loss, "step": step})
+
+    if avg_val_loss < previous_best_val_loss:
+        previous_best_val_loss = avg_val_loss
+        torch.save(model.state_dict(), "gpt2.pth")
+        print(f"Model saved to gpt2.pth")
+
 for epoch in range(num_epochs):
     total_train_loss = 0.0
-    total_val_loss = 0.0
 
     # Training loop
+    print(f"Running training loop for epoch {epoch}, number of batches: {len(train_loader)}")
     model.train()
-    for batch in train_loader:
-        inputs, labels = batch, batch
+    for i, batch in enumerate(train_loader):
+        # if i > max_num_batches_train:
+        #     break
+
+        time1 = time.time()
+        inputs, labels = batch[0].to(device), batch[1].to(device)
+        inputs = inputs.reshape(B, T)
+        labels = labels.reshape(B, T)
+        time2 = time.time()
+
         optimizer.zero_grad()
         outputs = model(inputs)
         loss = criterion(outputs.view(-1, outputs.size(-1)), labels.view(-1))
         loss.backward()
         optimizer.step()
         total_train_loss += loss.item()
-    
-    avg_train_loss = total_train_loss / len(train_loader)
-    wandb.log({"train_loss": avg_train_loss, "epoch": epoch})
 
-    # Validation loop
-    model.eval()
-    with torch.no_grad():
-        for batch in val_loader:
-            inputs, labels = batch, batch
-            outputs = model(inputs)
-            loss = criterion(outputs.view(-1, outputs.size(-1)), labels.view(-1))
-            total_val_loss += loss.item()
-    
-    avg_val_loss = total_val_loss / len(val_loader)
-    wandb.log({"val_loss": avg_val_loss, "epoch": epoch})
+        time3 = time.time()
+        wandb.log({"train_loss": loss.item(), "time_loading": time2 - time1, "time_training": time3 - time2})
 
-    print(f"Epoch {epoch}, Train Loss: {avg_train_loss}, Val Loss: {avg_val_loss}")
+        if i % validation_every == 0:
+            run_validation(model, val_loader, step=epoch*len(train_loader) + i)
+    
+    avg_train_loss = total_train_loss / min(len(train_loader), max_num_batches_train)
+    wandb.log({"avg_train_loss": avg_train_loss, "epoch": epoch})
+
+    print(f"Epoch {epoch}, Avg Train Loss: {avg_train_loss}")
 
 # Finish the wandb run
 wandb.finish()

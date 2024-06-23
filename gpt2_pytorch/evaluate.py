@@ -8,7 +8,7 @@ val_dataset = FineWebDataset(data_dir, split='val')
 val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
 
 # Initialize the model
-config = GPT2Config(vocab_size=50257, hidden_size=768, num_layers=12, num_heads=12, max_position_embeddings=1024, type_vocab_size=2, initializer_range=0.02)
+config = GPT2Config(vocab_size=50257, hidden_size=768, num_layers=12, num_heads=12, max_position_embeddings=1024)
 model = GPT2Model(config)
 model.eval()
 

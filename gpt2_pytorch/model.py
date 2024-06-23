@@ -80,29 +80,25 @@ class GPT2Attention(nn.Module):
 class GPT2MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.c_fc = nn.Conv1d(config.hidden_size, config.hidden_size, kernel_size=1)
-        self.c_proj = nn.Conv1d(config.hidden_size, config.hidden_size, kernel_size=1)
-        self.act = nn.GELU(approximate='tanh')
-        self.dropout = nn.Dropout(p=0.1)
+        self.c_fc = nn.Linear(config.hidden_size, 4*config.hidden_size)
+        self.gelu = nn.GELU()
+        self.c_proj = nn.Linear(4*config.hidden_size, config.hidden_size)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
 
     def forward(self, x):
         x = self.c_fc(x)
-        x = self.act(x)
-        x = self.dropout(x)
-        x = self.c_proj(x)
-        x = self.dropout(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)  
         return x
 
 
 class GPT2Config(object):
-    def __init__(self, vocab_size, hidden_size, num_layers, num_heads, max_position_embeddings, type_vocab_size, initializer_range):
+    def __init__(self, vocab_size, hidden_size, num_layers, num_heads, max_position_embeddings):
         self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.max_position_embeddings = max_position_embeddings
-        self.type_vocab_size = type_vocab_size
-        self.initializer_range = initializer_range
 
 
 
@@ -124,6 +120,7 @@ class GPT2Model(nn.Module):
         self.lm_head = nn.Linear(self.config.hidden_size, self.config.vocab_size, bias=False)
 
     def forward(self, input_ids):
+        # print(f"input_ids shape: {input_ids.shape}")
         # Get the input shape
         batch_size, seq_length = input_ids.size()
         
@@ -138,18 +135,40 @@ class GPT2Model(nn.Module):
         # Add embeddings and apply dropout
         hidden_states = inputs_embeds + position_embeds
         hidden_states = self.model['drop'](hidden_states)
+
         
         # Pass through each transformer block
         for block in self.model['h']:
             hidden_states = block(hidden_states)
+            
         
         # Apply final layer normalization
         hidden_states = self.model['ln_f'](hidden_states)
         
+        
         # Get logits
         logits = self.lm_head(hidden_states)
         
+        # print(f"logits shape: {logits.shape}")
+        
         return logits
+
+    @classmethod
+    def randomly_initialize_model(cls, config):
+        model = cls(config)
+        for name, module in model.named_children():
+            if isinstance(module, nn.Linear):
+                module.weight.data.normal_(mean=0.0, std=0.02)
+                if module.bias is not None:
+                    module.bias.data.zero_()
+            elif isinstance(module, nn.Embedding):
+                module.weight.data.normal_(mean=0.0, std=0.02)
+                if module.padding_idx is not None:
+                    module.weight.data[module.padding_idx].zero_()
+            elif isinstance(module, nn.LayerNorm):
+                module.bias.data.zero_()
+                module.weight.data.fill_(1.0)
+        return model
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -165,44 +184,28 @@ class GPT2Model(nn.Module):
             module.weight.data.fill_(1.0)
 
     def generate(self, input_ids, max_length=100, temperature=1.0, top_k=50, top_p=0.9):
-        # Initialize the input and output tensors
-        input_ids = input_ids.unsqueeze(0)
-        output_ids = torch.zeros(max_length, dtype=torch.long, device=input_ids.device)
-        
-        # Initialize the past key and value tensors
-        past_key_values = None
-        
-        # Initialize the counter for the number of generated tokens
-        num_generated_tokens = 0
-        
-        # Initialize the loop counter
-        for i in range(max_length):
+        x = input_ids
+        while x.shape[1] < max_length:
             # Forward pass through the model
             outputs = self(input_ids)
             
             # Get the logits for the next token prediction
             logits = outputs[:, -1, :] / temperature
             
-            # Apply the top-k and top-p filtering  
-            logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
+            # Get the probs
+            probs = F.softmax(logits, dim=-1)
+
+            # do top-k sampling of 50 (huggingface pipeline default)
+            # topk_probs here becomes (5, 50), topk_indices is (5, 50)
+            topk_probs, topk_indices = torch.topk(probs, top_k, dim=-1)
             
-            # Sample the next token
-            next_token = torch.multinomial(F.softmax(logits, dim=-1), num_samples=1)
-            
-            # Update the input and output tensors
-            input_ids = torch.cat([input_ids, next_token.unsqueeze(1)], dim=1)
-            output_ids[i] = next_token.item()
-            
-            # Update the past key and value tensors
-            if past_key_values is not None:
-                past_key_values = self.model['h'][-1].attn.past_key_values(past_key_values)
-            
-            # Update the counter for the number of generated tokens
-            num_generated_tokens += 1
-            
-            # Check if the maximum number of tokens has been reached
-            if num_generated_tokens >= max_length:
-                break
+            # select a token from the top-k probabilities
+            # note: multinomial does not demand the input to sum to 1
+            ix = torch.multinomial(topk_probs, 1) # (B, 1)
+            # gather the corresponding indices
+            xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
+            # append to the sequence
+            x = torch.cat((x, xcol), dim=1)
         
         # Return the generated text
-        return output_ids.squeeze(0)[:num_generated_tokens]
+        return x[:, :]
