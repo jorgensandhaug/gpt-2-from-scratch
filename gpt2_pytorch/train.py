@@ -14,7 +14,7 @@ wandb.init(project="gpt2")
 # Define parameters
 data_dir = 'edu_fineweb10B'
 B = 32  # Batch size for DataLoader
-T = 1024  # Sequence length
+T = 256  # Sequence length
 process_rank = 0  # Rank of the current process (e.g., in multi-GPU training)
 num_processes = 1  # Total number of processes
 
@@ -30,7 +30,7 @@ val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
 # Initialize the model and optimizer
 config = GPT2Config(
     vocab_size=50257,
-    hidden_size=768,
+    hidden_size=384,
     num_layers=12,
     num_heads=12,
     max_position_embeddings=T,
