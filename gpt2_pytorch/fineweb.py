@@ -23,8 +23,8 @@ DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), local_dir)
 os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 
 # download the dataset
-# fw = load_dataset("HuggingFaceFW/fineweb-edu", name=remote_name, split="train", cache_dir=DATA_CACHE_DIR)
-fw = load_dataset("nampdn-ai/mini-fineweb", name=remote_name, split="sample10bt", cache_dir=os.path.join(DATA_CACHE_DIR, "mini-fineweb"))
+fw = load_dataset("HuggingFaceFW/fineweb-edu", name=remote_name, split="train", cache_dir=os.path.join(DATA_CACHE_DIR, "fineweb-edu"))
+#fw = load_dataset("nampdn-ai/mini-fineweb", name=remote_name, split="sample10bt", cache_dir=os.path.join(DATA_CACHE_DIR, "mini-fineweb"))
 
 # init the tokenizer
 enc = tiktoken.get_encoding("gpt2")
