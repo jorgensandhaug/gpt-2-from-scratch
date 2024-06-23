@@ -16,7 +16,7 @@ from tqdm import tqdm # pip install tqdm
 # ------------------------------------------
 local_dir = "edu_fineweb10B"
 remote_name = "sample-10BT"
-shard_size = int(1e7) # 10M tokens per shard, total of 100 shards
+shard_size = int(1e8) # 100M tokens per shard, total of 100 shards
 
 # create the cache the local directory if it doesn't exist yet
 DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), local_dir)
